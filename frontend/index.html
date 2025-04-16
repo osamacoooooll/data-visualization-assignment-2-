@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Cyber Traffic Map</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      font-family: sans-serif;
+      background-color: #1e1e1e;
+    }
+
+    #map {
+      height: 100%;
+      width: 60%;
+      float: left;
+    }
+
+    .info-table {
+      position: absolute;
+      bottom: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 10px;
+      font-size: 14px;
+      border-radius: 5px;
+      max-height: 200px;
+      overflow-y: auto;
+      z-index: 1000;
+      width: 35%;
+      height: 90%;
+      overflow-y: scroll;
+    }
+
+    .info-table table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .info-table th, .info-table td {
+      padding: 4px 8px;
+      text-align: left;
+      border-bottom: 1px solid #444;
+    }
+
+    #common-locations {
+      position: absolute;
+      top: 10px;  /* Move to top */
+      right: 10px; /* Move to the right */
+      background: rgba(0, 0, 0, 0.8);
+      color: white;
+      padding: 10px;
+      font-size: 14px;
+      border-radius: 5px;
+      max-height: 200px;
+      overflow-y: auto;
+      z-index: 1000;
+      width: 25%;  /* Reduced width to make it more compact */
+    }
+
+    #common-locations ul {
+      list-style-type: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    #common-locations li {
+      margin: 5px 0;
+    }
+
+    #tooltip {
+      position: absolute;
+      color: white;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 5px;
+      border-radius: 5px;
+      display: none;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="info-table">
+    <table>
+      <thead>
+        <tr>
+          <th>IP Address</th>
+          <th>Suspicious</th>
+          <th>Timestamp</th>
+        </tr>
+      </thead>
+      <tbody id="traffic-table-body"></tbody>
+    </table>
+  </div>
+
+  <div id="common-locations">
+    <h3>Most Common Locations</h3>
+    <ul id="locations-list"></ul>
+  </div>
+
+  <div id="tooltip"></div>
+
+  <script src="https://unpkg.com/three@0.139.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.139.0/examples/js/controls/OrbitControls.js"></script>
+  <script>
+    let scene, camera, renderer, controls;
+    let markers = [];
+    let raycaster = new THREE.Raycaster();
+    let mouse = new THREE.Vector2();
+    let tableBody = document.getElementById('traffic-table-body');
+    let locationsList = document.getElementById('locations-list');
+    let locationFrequency = {}; // Track frequency of locations (latitude, longitude ranges)
+    let tooltip = document.getElementById('tooltip');
+
+    function formatTimestamp(ts) {
+      const date = new Date(ts * 1000);
+      return date.toLocaleString();
+    }
+
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.getElementById('map').appendChild(renderer.domElement);
+
+      // Lighting
+      const light = new THREE.AmbientLight(0xffffff, 1);
+      scene.add(light);
+
+      // Load Earth texture
+      const textureLoader = new THREE.TextureLoader();
+      textureLoader.load(
+        'earth.jpg',
+        function (earthTexture) {
+          const geometry = new THREE.SphereGeometry(1, 64, 64);
+          const material = new THREE.MeshStandardMaterial({ map: earthTexture });
+          const globe = new THREE.Mesh(geometry, material);
+          scene.add(globe);
+        },
+        undefined,
+        function (err) {
+          console.error('Error loading texture:', err);
+        }
+      );
+
+      camera.position.z = 3;
+
+      controls = new THREE.OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.25;
+      controls.enableZoom = true;
+
+      // Listen for mouse move and click
+      window.addEventListener('mousemove', onMouseMove, false);
+      window.addEventListener('click', onMouseClick, false);
+
+      animate();
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    function onMouseMove(event) {
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.update();
+    }
+
+    function onMouseClick(event) {
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObjects(markers);
+
+      if (intersects.length > 0) {
+        const marker = intersects[0].object;
+        showTooltip(marker);
+      }
+    }
+
+    function showTooltip(marker) {
+      const row = marker.userData;
+      const content = `
+        <strong>IP Address:</strong> ${row.ip} <br>
+        <strong>Suspicious:</strong> ${row.suspicious} <br>
+        <strong>Timestamp:</strong> ${formatTimestamp(row.timestamp)}
+      `;
+
+      tooltip.innerHTML = content;
+      tooltip.style.left = `${mouse.x * window.innerWidth + 10}px`;
+      tooltip.style.top = `${-mouse.y * window.innerHeight + 10}px`;
+      tooltip.style.display = 'block';
+    }
+
+    function hideTooltip() {
+      tooltip.style.display = 'none';
+    }
+
+    function updateCommonLocations() {
+      // Sort locations by frequency
+      const sortedLocations = Object.entries(locationFrequency)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5); // Get top 5 locations
+
+      locationsList.innerHTML = '';
+      sortedLocations.forEach(([location, count]) => {
+        const li = document.createElement('li');
+        li.textContent = `${location}: ${count}`;
+        locationsList.appendChild(li);
+      });
+    }
+
+    async function fetchAndDisplayData() {
+      try {
+        const res = await fetch('http://server:5000/data');
+        const data = await res.json();
+
+        markers.forEach(marker => scene.remove(marker));
+        markers = [];
+        tableBody.innerHTML = '';
+
+        data.forEach(entry => {
+          const { ip, latitude, longitude, suspicious, timestamp } = entry;
+
+          // Correct projection for lat/lon to 3D coordinates
+          const phi = (90 - latitude) * (Math.PI / 180);
+          const theta = (longitude + 180) * (Math.PI / 180);
+          const radius = 1.05;
+
+          const x = radius * Math.sin(phi) * Math.cos(theta);
+          const y = radius * Math.cos(phi);
+          const z = radius * Math.sin(phi) * Math.sin(theta);
+
+          const markerGeometry = new THREE.SphereGeometry(0.01, 16, 16);
+          const markerMaterial = new THREE.MeshBasicMaterial({
+            color: suspicious > 0.5 ? 0xff4c4c : 0x00ffff,
+          });
+          const marker = new THREE.Mesh(markerGeometry, markerMaterial);
+          marker.position.set(x, y, z);
+          scene.add(marker);
+          markers.push(marker);
+
+          // Store data on the marker for later use
+          marker.userData = { ip, suspicious, timestamp };
+
+          // Track locations for the most common regions
+          const locationKey = `${Math.round(latitude)}_${Math.round(longitude)}`;
+          locationFrequency[locationKey] = (locationFrequency[locationKey] || 0) + 1;
+
+          // Add data to table
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${ip}</td>
+            <td>${suspicious}</td>
+            <td>${formatTimestamp(timestamp)}</td>
+          `;
+          tableBody.appendChild(row);
+        });
+
+        // Update the list of most common locations
+        updateCommonLocations();
+      } catch (err) {
+        console.error("Failed to fetch data:", err);
+      }
+    }
+
+    init();
+    fetchAndDisplayData();
+    setInterval(fetchAndDisplayData, 10000); // Refresh data every 10 seconds
+  </script>
+</body>
+</html>
